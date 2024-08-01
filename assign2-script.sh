@@ -1,80 +1,69 @@
 #!/bin/bash
 
-echo "Starting assignment2.sh..."
+TARGET_IP="192.168.16.21"
+TARGET_NETPLAN_CONFIG="/etc/netplan/50-cloud-init.yaml"
+TARGET_HOSTS_FILE="/etc/hosts"
+USER_LIST=("dennis" "aubrey" "captain" "snibbles" "brownie" "scooter" "sandy" "perrier" "cindy" "tiger" "yoda")
+SUDO_USER="dennis"
+PUBLIC_SSH_KEY="ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIG4rT3vTt99Ox5kndS4HmgTrKBT8SKzhK4rhGkEVGlCI student@generic-vm"
 
-NET_INTERFACE="eth0"
-HOSTS_FILE="/etc/hosts"
-UFW_LOG_FILE="/var/log/ufw.log"
-USERS=("dennis" "aubrey" "captain" "snibbles" "brownie" "scooter" "sandy" "perrier" "cindy" "tiger" "yoda")
+echo "Updating network interface configuration..."
+if ! grep -q "$TARGET_IP" $TARGET_NETPLAN_CONFIG; then
+    sudo sed -i "/addresses:/c\            addresses: [$TARGET_IP/24]" $TARGET_NETPLAN_CONFIG
+    sudo netplan apply
+    echo "Network interface updated."
+else
+    echo "Network interface already configured."
+fi
 
-update_netplan() {
-    echo "Updating netplan configuration..."
-    cp /etc/netplan/*.yaml /etc/netplan/backup.yaml
-    cat <<EOF > /etc/netplan/01-netcfg.yaml
-    network:
-      version: 2
-      ethernets:
-        $NET_INTERFACE:
-          addresses:
-            - 192.168.16.21/24
-          gateway4: 192.168.16.1
-          nameservers:
-            addresses:
-              - 8.8.8.8
-              - 8.8.4.4
-    EOF
-    netplan apply
-}
+echo "Updating /etc/hosts file..."
+if ! grep -q "$TARGET_IP server1" $TARGET_HOSTS_FILE; then
+    sudo sed -i "/server1/d" $TARGET_HOSTS_FILE
+    echo "$TARGET_IP server1" | sudo tee -a $TARGET_HOSTS_FILE
+    echo "/etc/hosts updated."
+else
+    echo "/etc/hosts already configured."
+fi
 
-update_hosts_file() {
-    echo "Updating /etc/hosts file..."
-    cp $HOSTS_FILE ${HOSTS_FILE}.bak
-    sed -i 's/192.168.16.20/server1/g' $HOSTS_FILE
-}
+echo "Installing required software..."
+sudo apt-get update
+sudo apt-get install -y apache2 squid ufw
+echo "Software installation completed."
 
-install_software() {
-    echo "Installing software..."
-    apt-get update
-    apt-get install -y apache2 squid
-    systemctl start apache2
-    systemctl enable apache2
-    systemctl start squid
-    systemctl enable squid
-}
+echo "Configuring firewall..."
+sudo ufw default deny incoming
+sudo ufw default allow outgoing
+sudo ufw allow ssh from 192.168.16.0/24 to any port 22
+sudo ufw allow http
+sudo ufw allow 3128/tcp
+sudo ufw --force enable
+echo "Firewall configuration completed."
 
-configure_firewall() {
-    echo "Configuring firewall..."
-    ufw reset
-    ufw default deny incoming
-    ufw default allow outgoing
-    ufw allow 22/tcp
-    ufw allow 80/tcp
-    ufw allow 3128/tcp
-    ufw enable
-}
+echo "Creating user accounts and configuring SSH..."
+for user in "${USER_LIST[@]}"; do
+    if id "$user" &>/dev/null; then
+        echo "User $user already exists."
+    else
+        sudo adduser --disabled-password --gecos "" "$user"
+        sudo mkdir -p /home/"$user"/.ssh
+        sudo chown "$user":"$user" /home/"$user"/.ssh
+        sudo chmod 700 /home/"$user"/.ssh
+        ssh-keygen -t rsa -b 2048 -f /home/"$user"/.ssh/id_rsa -N ""
+        ssh-keygen -t ed25519 -f /home/"$user"/.ssh/id_ed25519 -N ""
+        sudo sh -c "cat /home/$user/.ssh/id_rsa.pub >> /home/$user/.ssh/authorized_keys"
+        sudo sh -c "cat /home/$user/.ssh/id_ed25519.pub >> /home/$user/.ssh/authorized_keys"
+        sudo chown "$user":"$user" /home/"$user"/.ssh/authorized_keys
+        sudo chmod 600 /home/"$user"/.ssh/authorized_keys
+    fi
+done
 
-create_users() {
-    echo "Creating users..."
-    for user in "${USERS[@]}"; do
-        if id "$user" &>/dev/null; then
-            echo "User $user already exists"
-        else
-            useradd -m -s /bin/bash $user
-            mkdir -p /home/$user/.ssh
-            chown $user:$user /home/$user/.ssh
-            chmod 700 /home/$user/.ssh
-            echo "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIG4rT3vTt99Ox5kndS4HmgTrKBT8SKzhK4rhGkEVGlCI student@generic-vm" >> /home/$user/.ssh/authorized_keys
-            chown $user:$user /home/$user/.ssh/authorized_keys
-            chmod 600 /home/$user/.ssh/authorized_keys
-        fi
-    done
-    usermod -aG sudo dennis
-}
-
-update_netplan
-update_hosts_file
-install_software
-configure_firewall
-create_users
+echo "Granting sudo access to $SUDO_USER..."
+if ! sudo getent group sudo | grep -q "$SUDO_USER"; then
+    sudo usermod -aG sudo "$SUDO_USER"
+    echo "$PUBLIC_SSH_KEY" | sudo tee -a /home/"$SUDO_USER"/.ssh/authorized_keys
+    echo "Sudo access granted to $SUDO_USER."
+else
+    echo "$SUDO_USER already has sudo access."
+fi
 
 echo "Script execution completed."
